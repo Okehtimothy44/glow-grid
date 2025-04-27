@@ -22,12 +22,12 @@
 ;; Stores comprehensive user information with achievement tracking
 (define-map user-profiles 
   principal 
-  {
-    username: (string-ascii MAX_USERNAME_LENGTH),  ;; Unique username
-    email-hash: (buff 32),                         ;; Hashed email for privacy
-    skill-level: uint,                             ;; User's skill progression
-    achievements: (list MAX_ACHIEVEMENTS (string-ascii 50))  ;; Achievement identifiers
-  }
+  (tuple
+    (username (string-ascii MAX_USERNAME_LENGTH))  ;; Unique username
+    (email-hash (buff 32))                         ;; Hashed email for privacy
+    (skill-level uint)                             ;; User's skill progression
+    (achievements (list MAX_ACHIEVEMENTS (string-ascii 50)))  ;; Achievement identifiers
+  )
 )
 
 ;; Username uniqueness tracking
@@ -68,12 +68,14 @@
     (asserts! (is-none (map-get? user-profiles tx-sender)) (err ERR_PROFILE_EXISTS))
     
     ;; Create the profile
-    (map-set user-profiles tx-sender {
-      username: username,
-      email-hash: email-hash,
-      skill-level: initial-skill-level,
-      achievements: (list)
-    })
+    (map-set user-profiles tx-sender 
+      (tuple
+        (username username)
+        (email-hash email-hash)
+        (skill-level initial-skill-level)
+        (achievements (list))
+      )
+    )
     
     ;; Mark username as taken
     (map-set usernames-taken username true)
@@ -82,38 +84,41 @@
   )
 )
 
+;; Update user profile with new email hash and/or skill level
 (define-public (update-profile 
   (new-email-hash (optional (buff 32))) 
   (new-skill-level (optional uint))
 )
-  (let (
-    (current-profile (unwrap! (map-get? user-profiles tx-sender) (err ERR_PROFILE_NOT_FOUND)))
-    (updated-profile 
-      (merge current-profile 
-        (if (is-some new-email-hash)
-          { email-hash: (unwrap-panic new-email-hash) }
-          {}))
-    (final-profile
-      (merge updated-profile
-        (if (is-some new-skill-level)
-          { skill-level: (unwrap-panic new-skill-level) }
-          {}))
-  )
-    (map-set user-profiles tx-sender final-profile)
+  (let ((current-profile (unwrap! (map-get? user-profiles tx-sender) (err ERR_PROFILE_NOT_FOUND))))
+    (map-set user-profiles tx-sender 
+      (merge current-profile
+        (tuple
+          (email-hash (default-to (get email-hash current-profile) new-email-hash))
+          (skill-level (default-to (get skill-level current-profile) new-skill-level))
+        )
+      )
+    )
+    
     (ok true)
   )
 )
 
+;; Add an achievement to the user's profile
 (define-public (add-achievement (achievement (string-ascii 50)))
-  (let (
-    (current-profile (unwrap! (map-get? user-profiles tx-sender) (err ERR_PROFILE_NOT_FOUND)))
-    (current-achievements (get achievements current-profile))
-  )
+  (let ((current-profile (unwrap! (map-get? user-profiles tx-sender) (err ERR_PROFILE_NOT_FOUND)))
+        (current-achievements (get achievements current-profile)))
+    ;; Check if we've reached the maximum number of achievements
     (asserts! (< (len current-achievements) MAX_ACHIEVEMENTS) (err ERR_MAX_ACHIEVEMENTS))
     
+    ;; Update the profile with the new achievement
     (map-set user-profiles tx-sender 
-      (merge current-profile 
-        { achievements: (unwrap-panic (as-max-len (append current-achievements achievement) MAX_ACHIEVEMENTS)) }
+      (merge current-profile
+        (tuple
+          (achievements (unwrap! (as-max-len? 
+                          (append current-achievements achievement) 
+                          MAX_ACHIEVEMENTS)
+                        (err ERR_MAX_ACHIEVEMENTS)))
+        )
       )
     )
     
@@ -121,20 +126,21 @@
   )
 )
 
+;; Remove an achievement from the user's profile
 (define-public (remove-achievement (achievement (string-ascii 50)))
-  (let (
-    (current-profile (unwrap! (map-get? user-profiles tx-sender) (err ERR_PROFILE_NOT_FOUND)))
-    (current-achievements (get achievements current-profile))
-    (filtered-achievements 
-      (filter 
-        (lambda (x) (not (is-eq x achievement))) 
-        current-achievements
-      )
-    )
-  )
-    (map-set user-profiles tx-sender 
-      (merge current-profile 
-        { achievements: filtered-achievements }
+  (begin
+    (let ((current-profile (unwrap! (map-get? user-profiles tx-sender) (err ERR_PROFILE_NOT_FOUND))))
+      (let ((current-achievements (get achievements current-profile)))
+        ;; Update the profile without the achievement
+        (map-set user-profiles tx-sender 
+          (merge current-profile
+            (tuple
+              (achievements (filter 
+                              (lambda (a) (not (is-eq a achievement))) 
+                              current-achievements))
+            )
+          )
+        )
       )
     )
     
